@@ -1,0 +1,115 @@
+# viewer.py
+# you first need to run main so you have a .jpc file type.
+# to run: python3 viewer.py compressed.jpc color_from_jpc.png
+
+import sys
+import struct
+from typing import List
+
+from PIL import Image
+
+from quantization import STANDARD_LUMA_Q, STANDARD_CHROMA_Q, dequantize_block
+from DCTtransformation import idct_2d_block, merge_blocks
+from entropyEncoding import rle_decode, inverse_zigzag_scan
+from colorConversion import ycbcr_to_rgb_image
+
+HEADER_MAGIC = b"JPCS"
+HEADER_VERSION = 2
+
+
+def load_compressed_from_file(path: str) -> dict:
+    with open(path, "rb") as f:
+        magic = f.read(4)
+        if magic != HEADER_MAGIC:
+            raise ValueError("Not a JPCS file (bad magic)")
+
+        version = struct.unpack(">B", f.read(1))[0]
+        if version != HEADER_VERSION:
+            raise ValueError(f"Unsupported JPCS version: {version}")
+
+        width, height = struct.unpack(">II", f.read(8))
+        block_size = struct.unpack(">B", f.read(1))[0]
+        y_count, cb_count, cr_count = struct.unpack(">III", f.read(12))
+
+        def read_channel(block_count):
+            blocks = []
+            for _ in range(block_count):
+                pair_count = struct.unpack(">H", f.read(2))[0]
+                rle_block = []
+                for _ in range(pair_count):
+                    zeros, value = struct.unpack(">Bh", f.read(3))
+                    rle_block.append((zeros, value))
+                blocks.append(rle_block)
+            return blocks
+
+        y_blocks = read_channel(y_count)
+        cb_blocks = read_channel(cb_count)
+        cr_blocks = read_channel(cr_count)
+
+    return {
+        "width": width,
+        "height": height,
+        "block_size": block_size,
+        "y_blocks": y_blocks,
+        "cb_blocks": cb_blocks,
+        "cr_blocks": cr_blocks,
+    }
+
+
+def _decompress_channel(blocks_rle, q_matrix, width, height, block_size):
+    reconstructed_blocks = []
+
+    for rle_block in blocks_rle:
+        zz = rle_decode(rle_block, total_length=64)
+        q_block = inverse_zigzag_scan(zz, block_size)
+        dct_block = dequantize_block(q_block, q_matrix)
+        spatial_block = idct_2d_block(dct_block)
+        reconstructed_blocks.append(spatial_block)
+
+    channel = merge_blocks(reconstructed_blocks, height, width, block_size)
+    return channel
+
+
+def main():
+    if len(sys.argv) < 2:
+        print("Usage:")
+        print("  python3 viewer.py compressed.jpc [output.png]")
+        sys.exit(1)
+
+    jpc_path = sys.argv[1]
+    output_path = sys.argv[2] if len(sys.argv) >= 3 else "view_from_jpc.png"
+
+    print("Loading compressed file:", jpc_path)
+    compressed = load_compressed_from_file(jpc_path)
+
+    width = compressed["width"]
+    height = compressed["height"]
+    block_size = compressed["block_size"]
+
+    print("Reconstructing channels...")
+    y_channel = _decompress_channel(
+        compressed["y_blocks"], STANDARD_LUMA_Q, width, height, block_size
+    )
+    cb_channel = _decompress_channel(
+        compressed["cb_blocks"], STANDARD_CHROMA_Q, width, height, block_size
+    )
+    cr_channel = _decompress_channel(
+        compressed["cr_blocks"], STANDARD_CHROMA_Q, width, height, block_size
+    )
+
+    print("Converting YCbCr -> RGB...")
+    img = ycbcr_to_rgb_image(y_channel, cb_channel, cr_channel)
+
+    print("Saving to:", output_path)
+    img.save(output_path)
+
+    try:
+        img.show()
+    except Exception:
+        pass
+
+    print("Done.")
+
+
+if __name__ == "__main__":
+    main()
