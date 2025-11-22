@@ -1,0 +1,117 @@
+
+# dct_transform.py
+#
+# - Split/merge 2D arrays into 8x8 blocks
+# - 2D DCT and inverse DCT on a single 8x8 block
+
+import math
+from typing import List
+
+
+def split_into_blocks(channel: List[List[int]], block_size: int) -> List[List[List[float]]]:
+    """
+    Split a 2D channel into block_size x block_size blocks.
+    Pads with zeros if height/width not multiple of block_size.
+    """
+    height = len(channel)
+    width = len(channel[0])
+
+    padded_height = (height + block_size - 1) // block_size * block_size
+    padded_width = (width + block_size - 1) // block_size * block_size
+
+    # Pad
+    padded = [[0.0] * padded_width for _ in range(padded_height)]
+    for j in range(height):
+        for i in range(width):
+            padded[j][i] = float(channel[j][i])
+
+    blocks = []
+    for by in range(0, padded_height, block_size):
+        for bx in range(0, padded_width, block_size):
+            block = [
+                [padded[by + y][bx + x] for x in range(block_size)]
+                for y in range(block_size)
+            ]
+            blocks.append(block)
+
+    return blocks
+
+
+def merge_blocks(blocks: List[List[List[float]]], height: int, width: int, block_size: int) -> List[List[int]]:
+    """
+    Merge block_size x block_size blocks back into a 2D array,
+    then crop to original (height, width).
+    """
+    padded_height = (height + block_size - 1) // block_size * block_size
+    padded_width = (width + block_size - 1) // block_size * block_size
+
+    out = [[0.0] * padded_width for _ in range(padded_height)]
+
+    idx = 0
+    for by in range(0, padded_height, block_size):
+        for bx in range(0, padded_width, block_size):
+            block = blocks[idx]
+            idx += 1
+            for y in range(block_size):
+                for x in range(block_size):
+                    out[by + y][bx + x] = block[y][x]
+
+    # Crop
+    cropped = [
+        [int(round(out[j][i])) for i in range(width)]
+        for j in range(height)
+    ]
+    return cropped
+
+
+def _alpha(u: int, n: int = 8) -> float:
+    return math.sqrt(1.0 / n) if u == 0 else math.sqrt(2.0 / n)
+
+
+def dct_2d_block(block: List[List[float]]) -> List[List[float]]:
+    """
+    Compute the 2D DCT for an 8x8 block.
+    Input: spatial values in [0,255].
+    We shift by -128 for JPEG-style centered DCT, then transform.
+    """
+    n = 8
+    out = [[0.0] * n for _ in range(n)]
+
+    # Shift
+    shifted = [[block[y][x] - 128.0 for x in range(n)] for y in range(n)]
+
+    for u in range(n):
+        for v in range(n):
+            cu = _alpha(u, n)
+            cv = _alpha(v, n)
+            s = 0.0
+            for x in range(n):
+                for y in range(n):
+                    s += shifted[y][x] * math.cos((2 * x + 1) * u * math.pi / (2 * n)) * \
+                         math.cos((2 * y + 1) * v * math.pi / (2 * n))
+            out[v][u] = cu * cv * s
+
+    return out
+
+
+def idct_2d_block(block: List[List[float]]) -> List[List[float]]:
+    """
+    Inverse 2D DCT for an 8x8 block.
+    Returns spatial-domain values, re-shifted by +128.
+    """
+    n = 8
+    out = [[0.0] * n for _ in range(n)]
+
+    for x in range(n):
+        for y in range(n):
+            s = 0.0
+            for u in range(n):
+                for v in range(n):
+                    cu = _alpha(u, n)
+                    cv = _alpha(v, n)
+                    s += cu * cv * block[v][u] * \
+                         math.cos((2 * x + 1) * u * math.pi / (2 * n)) * \
+                         math.cos((2 * y + 1) * v * math.pi / (2 * n))
+            out[y][x] = s + 128.0
+
+    return out
