@@ -1,0 +1,258 @@
+# JPEG Compression:
+# main 4 topics/steps: Color Space Conversion (RGB to YCbCr), Block-Based DCT, Quantization, Entropy Encoding
+# this will be the main file calling everything. I think we should have the above 4 steps be separate.
+# produces a .jpc file (our compressed image / data) and a rescontructed_output.png (so this is a way to view our jpc file as well, but I want to migrate to using viewer(ready push comment for viewer)
+
+import os
+import struct
+from PIL import Image
+
+from colorConversion import rgb_to_ycbcr_image, ycbcr_to_rgb_image
+from DCTtransformation import (
+    split_into_blocks,
+    merge_blocks,
+    dct_2d_block,
+    idct_2d_block,
+)
+from quantization import (
+    quantize_block,
+    dequantize_block,
+    STANDARD_LUMA_Q,
+    STANDARD_CHROMA_Q,
+)
+from entropyEncoding import zigzag_scan, inverse_zigzag_scan, rle_encode, rle_decode
+
+BLOCK_SIZE = 8
+HEADER_MAGIC = b"JPCS"
+HEADER_VERSION = 2  # bump version because format changes
+
+
+
+def load_image(path: str) -> Image.Image:
+    img = Image.open(path).convert("RGB")
+    return img
+
+
+def save_image(img: Image.Image, path: str) -> None:
+    img.save(path)
+
+
+
+def save_compressed_to_file(compressed: dict, path: str) -> None:
+    """
+    Serialize compressed Y/Cb/Cr to our custom .jpc binary format.
+
+    Layout (big-endian):
+    - 4 bytes: magic "JPCS"
+    - 1 byte : version
+    - 4 bytes: width
+    - 4 bytes: height
+    - 1 byte : block_size
+    - 4 bytes: y_block_count
+    - 4 bytes: cb_block_count
+    - 4 bytes: cr_block_count
+    Then for each channel in order Y, Cb, Cr:
+        For each block:
+          - 2 bytes: number of (zeros,value) pairs
+          - For each pair:
+              - 1 byte : zeros (0..63)
+              - 2 bytes: value (signed short)
+    """
+    width = compressed["width"]
+    height = compressed["height"]
+    block_size = compressed["block_size"]
+
+    y_blocks = compressed["y_blocks"]
+    cb_blocks = compressed["cb_blocks"]
+    cr_blocks = compressed["cr_blocks"]
+
+    with open(path, "wb") as f:
+        f.write(HEADER_MAGIC)
+        f.write(struct.pack(">B", HEADER_VERSION))
+        f.write(struct.pack(">II", width, height))
+        f.write(struct.pack(">B", block_size))
+        f.write(struct.pack(">III", len(y_blocks), len(cb_blocks), len(cr_blocks)))
+
+        def write_channel(blocks):
+            for rle_block in blocks:
+                pair_count = len(rle_block)
+                f.write(struct.pack(">H", pair_count))
+                for zeros, value in rle_block:
+                    f.write(struct.pack(">Bh", zeros, value))
+
+        write_channel(y_blocks)
+        write_channel(cb_blocks)
+        write_channel(cr_blocks)
+
+
+
+def load_compressed_from_file(path: str) -> dict:
+    """
+    Read .jpc file written by save_compressed_to_file().
+    """
+    with open(path, "rb") as f:
+        magic = f.read(4)
+        if magic != HEADER_MAGIC:
+            raise ValueError("Not a JPCS file")
+
+        version = struct.unpack(">B", f.read(1))[0]
+        if version != HEADER_VERSION:
+            raise ValueError(f"Unsupported version: {version}")
+
+        width, height = struct.unpack(">II", f.read(8))
+        block_size = struct.unpack(">B", f.read(1))[0]
+        y_count, cb_count, cr_count = struct.unpack(">III", f.read(12))
+
+        def read_channel(block_count):
+            blocks = []
+            for _ in range(block_count):
+                pair_count = struct.unpack(">H", f.read(2))[0]
+                rle_block = []
+                for _ in range(pair_count):
+                    zeros, value = struct.unpack(">Bh", f.read(3))
+                    rle_block.append((zeros, value))
+                blocks.append(rle_block)
+            return blocks
+
+        y_blocks = read_channel(y_count)
+        cb_blocks = read_channel(cb_count)
+        cr_blocks = read_channel(cr_count)
+
+    return {
+        "width": width,
+        "height": height,
+        "block_size": block_size,
+        "y_blocks": y_blocks,
+        "cb_blocks": cb_blocks,
+        "cr_blocks": cr_blocks,
+    }
+
+def _compress_channel(channel, q_matrix):
+    """
+    Compress a single Y/Cb/Cr channel:
+      - split into 8x8 blocks
+      - DCT
+      - quantize
+      - zigzag + RLE
+    Returns list[block] where each block is an RLE list.
+    """
+    blocks = split_into_blocks(channel, BLOCK_SIZE)
+    compressed_blocks = []
+
+    for block in blocks:
+        dct_block = dct_2d_block(block)
+        q_block = quantize_block(dct_block, q_matrix)
+        zz = zigzag_scan(q_block)
+        rle = rle_encode(zz)
+        compressed_blocks.append(rle)
+
+    return compressed_blocks
+
+
+def compress_image(img: Image.Image):
+    """
+    JPEG-like compression for all three channels (Y, Cb, Cr).
+    Returns a dict with compressed Y/Cb/Cr blocks.
+    """
+    width, height = img.size
+    y_channel, cb_channel, cr_channel = rgb_to_ycbcr_image(img)
+
+    y_blocks = _compress_channel(y_channel, STANDARD_LUMA_Q)
+    cb_blocks = _compress_channel(cb_channel, STANDARD_CHROMA_Q)
+    cr_blocks = _compress_channel(cr_channel, STANDARD_CHROMA_Q)
+
+    compressed = {
+        "width": width,
+        "height": height,
+        "block_size": BLOCK_SIZE,
+        "y_blocks": y_blocks,
+        "cb_blocks": cb_blocks,
+        "cr_blocks": cr_blocks,
+    }
+    return compressed
+
+def _decompress_channel(blocks_rle, q_matrix, width, height, block_size):
+    """
+    Reverse _compress_channel for one channel.
+    """
+    reconstructed_blocks = []
+
+    for rle_block in blocks_rle:
+        zz = rle_decode(rle_block, total_length=64)
+        q_block = inverse_zigzag_scan(zz, block_size)
+        dct_block = dequantize_block(q_block, q_matrix)
+        spatial_block = idct_2d_block(dct_block)
+        reconstructed_blocks.append(spatial_block)
+
+    channel = merge_blocks(reconstructed_blocks, height, width, block_size)
+    return channel
+
+
+def decompress_image(compressed: dict) -> Image.Image:
+    """
+    Decompress full-color image from compressed dict:
+      - decode Y, Cb, Cr channels
+      - convert YCbCr -> RGB
+    """
+    width = compressed["width"]
+    height = compressed["height"]
+    block_size = compressed["block_size"]
+
+    y_blocks = compressed["y_blocks"]
+    cb_blocks = compressed["cb_blocks"]
+    cr_blocks = compressed["cr_blocks"]
+
+    y_channel = _decompress_channel(y_blocks, STANDARD_LUMA_Q, width, height, block_size)
+    cb_channel = _decompress_channel(cb_blocks, STANDARD_CHROMA_Q, width, height, block_size)
+    cr_channel = _decompress_channel(cr_blocks, STANDARD_CHROMA_Q, width, height, block_size)
+
+    img = ycbcr_to_rgb_image(y_channel, cb_channel, cr_channel)
+    return img
+
+
+
+def main():
+    input_path = "input.bmp"
+    compressed_path = "compressed.jpc"          # custom format
+    output_path = "output_reconstructed.png"
+
+    img = load_image(input_path)
+    img = img.resize((800, 533))   # keeps aspect ratio (6k×4k → 800×533)
+    print("Loaded image:", img.size)
+    width, height = img.size
+
+    # Convert once so we can reuse Cb/Cr during this early stage
+    y, cb, cr = rgb_to_ycbcr_image(img)
+
+    # Compress (currently only Y channel is compressed)
+    compressed = compress_image(img)
+    print("Compression produced", len(compressed["y_blocks"]), "blocks")
+
+    # Save our custom compressed representation
+    save_compressed_to_file(compressed, compressed_path)
+    print("Saved compressed file to", compressed_path)
+
+    # For sanity, load it back and decompress from the file
+    compressed_from_file = load_compressed_from_file(compressed_path)
+    reconstructed_img = decompress_image(compressed_from_file)
+    save_image(reconstructed_img, output_path)
+    print("Saved reconstructed image to", output_path)
+
+    # ---- Size comparison ----
+    # Raw RGB size (no compression)
+    raw_rgb_bytes = width * height * 3
+
+    original_png_size = os.path.getsize(input_path)
+    custom_compressed_size = os.path.getsize(compressed_path)
+    reconstructed_png_size = os.path.getsize(output_path)
+
+    print("\nSize comparison (bytes):")
+    print(f"  Raw RGB (width*height*3):  {raw_rgb_bytes}")
+    print(f"  Original PNG:              {original_png_size}")
+    print(f"  Custom JPCS file:          {custom_compressed_size}")
+    print(f"  Reconstructed PNG (Pillow): {reconstructed_png_size}")
+
+
+
+if __name__ == "__main__":
+    main()

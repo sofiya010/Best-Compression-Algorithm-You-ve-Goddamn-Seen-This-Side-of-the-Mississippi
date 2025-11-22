@@ -1,3 +1,0 @@
-# JPEG Compression:
-# main 4 topics/steps: Color Space Conversion (RGB to YCbCr), Block-Based DCT, Quantization, Entropy Encoding
-# this will be the main file calling everything. I think we should have the above 4 steps be separate.
