@@ -5,6 +5,7 @@
 
 from typing import List, Tuple
 from PIL import Image
+import numpy as np
 
 
 def _clamp(value: float, min_val: int = 0, max_val: int = 255) -> int:
@@ -39,7 +40,7 @@ def ycbcr_to_rgb_pixel(y: int, cb: int, cr: int) -> Tuple[int, int, int]:
 
 def rgb_to_ycbcr_image(img: Image.Image):
     """
-    Convert a Pillow RGB image to three 2D lists: Y, Cb, Cr.
+    Convert a Pillow RGB image to three 2D NumPy arrays: Y, Cb, Cr.
     """
     width, height = img.size
     pixels = img.load()
@@ -56,19 +57,26 @@ def rgb_to_ycbcr_image(img: Image.Image):
             cb_channel[y][x] = cb
             cr_channel[y][x] = cr
 
-    return y_channel, cb_channel, cr_channel
+    return (
+        np.array(y_channel, dtype=np.float32),
+        np.array(cb_channel, dtype=np.float32), 
+        np.array(cr_channel, dtype=np.float32), 
 
+    )
 
 def ycbcr_to_rgb_image(
-    y_channel: List[List[int]],
-    cb_channel: List[List[int]],
-    cr_channel: List[List[int]],
+    y_channel,
+    cb_channel,
+    cr_channel,
 ) -> Image.Image:
     """
     Convert 2D Y/Cb/Cr arrays back to a Pillow RGB image.
     """
-    height = len(y_channel)
-    width = len(y_channel[0])
+    y_channel  = np.array(y_channel)
+    cb_channel = np.array(cb_channel)
+    cr_channel = np.array(cr_channel)
+
+    height, width = y_channel.shape
 
     img = Image.new("RGB", (width, height))
     pixels = img.load()

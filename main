@@ -5,14 +5,15 @@
 
 import os
 import struct
+import numpy as np
 from PIL import Image
 
 from colorConversion import rgb_to_ycbcr_image, ycbcr_to_rgb_image
-from DCTtransformation import (
-    split_into_blocks,
-    merge_blocks,
-    dct_2d_block,
-    idct_2d_block,
+from twoDDCT import (
+    blockify,
+    unblockify,
+    dct_2d,
+    idct_2d
 )
 from quantization import (
     quantize_block,
@@ -136,11 +137,11 @@ def _compress_channel(channel, q_matrix):
       - zigzag + RLE
     Returns list[block] where each block is an RLE list.
     """
-    blocks = split_into_blocks(channel, BLOCK_SIZE)
+    blocks = blockify(channel, BLOCK_SIZE)
     compressed_blocks = []
 
     for block in blocks:
-        dct_block = dct_2d_block(block)
+        dct_block = dct_2d(block)
         q_block = quantize_block(dct_block, q_matrix)
         zz = zigzag_scan(q_block)
         rle = rle_encode(zz)
@@ -181,10 +182,12 @@ def _decompress_channel(blocks_rle, q_matrix, width, height, block_size):
         zz = rle_decode(rle_block, total_length=64)
         q_block = inverse_zigzag_scan(zz, block_size)
         dct_block = dequantize_block(q_block, q_matrix)
-        spatial_block = idct_2d_block(dct_block)
+        # convert to numpy array
+        arr = np.array(dct_block, dtype=np.float32)
+        spatial_block = idct_2d(arr)
         reconstructed_blocks.append(spatial_block)
 
-    channel = merge_blocks(reconstructed_blocks, height, width, block_size)
+    channel = unblockify(reconstructed_blocks, height, width, block_size)
     return channel
 
 
@@ -206,9 +209,9 @@ def decompress_image(compressed: dict) -> Image.Image:
     cb_channel = _decompress_channel(cb_blocks, STANDARD_CHROMA_Q, width, height, block_size)
     cr_channel = _decompress_channel(cr_blocks, STANDARD_CHROMA_Q, width, height, block_size)
 
+
     img = ycbcr_to_rgb_image(y_channel, cb_channel, cr_channel)
     return img
-
 
 
 def main():

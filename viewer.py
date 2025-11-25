@@ -4,12 +4,13 @@
 
 import sys
 import struct
+import numpy as np
 from typing import List
 
 from PIL import Image
 
 from quantization import STANDARD_LUMA_Q, STANDARD_CHROMA_Q, dequantize_block
-from DCTtransformation import idct_2d_block, merge_blocks
+from twoDDCT import idct_2d, unblockify
 from entropyEncoding import rle_decode, inverse_zigzag_scan
 from colorConversion import ycbcr_to_rgb_image
 
@@ -63,10 +64,12 @@ def _decompress_channel(blocks_rle, q_matrix, width, height, block_size):
         zz = rle_decode(rle_block, total_length=64)
         q_block = inverse_zigzag_scan(zz, block_size)
         dct_block = dequantize_block(q_block, q_matrix)
-        spatial_block = idct_2d_block(dct_block)
+        # add
+        arr = np.array(dct_block, dtype=np.float32)
+        spatial_block = idct_2d(arr)
         reconstructed_blocks.append(spatial_block)
 
-    channel = merge_blocks(reconstructed_blocks, height, width, block_size)
+    channel = unblockify(reconstructed_blocks, height, width, block_size)
     return channel
 
 
