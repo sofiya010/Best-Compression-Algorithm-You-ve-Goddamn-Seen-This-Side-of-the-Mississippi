@@ -1,7 +1,7 @@
 # JPEG Compression:
 # main 4 topics/steps: Color Space Conversion (RGB to YCbCr), Block-Based DCT, Quantization, Entropy Encoding
-# this will be the main file calling everything. I think we should have the above 4 steps be separate.
-# produces a .jpc file (our compressed image / data) and a rescontructed_output.png (so this is a way to view our jpc file as well, but I want to migrate to using viewer(ready push comment for viewer)
+# This is the compressor: it reads input.bmp, compresses it, and writes compressed.jpc.
+# Decompression / viewing is handled separately by the viewer program.
 
 import os
 import struct
@@ -9,12 +9,18 @@ import numpy as np
 from PIL import Image
 
 from colorConversion import rgb_to_ycbcr_image, ycbcr_to_rgb_image
+
+# TODO: point this import at your updated DCT module.
+# Make sure you import: blockify, unblockify, dct_2d, idct_2d (or alias your names to these).
 from twoDDCT import (
     blockify,
     unblockify,
     dct_2d,
     idct_2d
 )
+
+
+
 from quantization import (
     quantize_block,
     dequantize_block,
@@ -28,7 +34,6 @@ HEADER_MAGIC = b"JPCS"
 HEADER_VERSION = 2  # bump version because format changes
 
 
-
 def load_image(path: str) -> Image.Image:
     img = Image.open(path).convert("RGB")
     return img
@@ -36,7 +41,6 @@ def load_image(path: str) -> Image.Image:
 
 def save_image(img: Image.Image, path: str) -> None:
     img.save(path)
-
 
 
 def save_compressed_to_file(compressed: dict, path: str) -> None:
@@ -86,10 +90,10 @@ def save_compressed_to_file(compressed: dict, path: str) -> None:
         write_channel(cr_blocks)
 
 
-
 def load_compressed_from_file(path: str) -> dict:
     """
     Read .jpc file written by save_compressed_to_file().
+    (Not used by main anymore, but useful for the viewer to import.)
     """
     with open(path, "rb") as f:
         magic = f.read(4)
@@ -128,15 +132,20 @@ def load_compressed_from_file(path: str) -> dict:
         "cr_blocks": cr_blocks,
     }
 
+
 def _compress_channel(channel, q_matrix):
     """
     Compress a single Y/Cb/Cr channel:
+      - convert to NumPy array if needed
       - split into 8x8 blocks
       - DCT
       - quantize
       - zigzag + RLE
     Returns list[block] where each block is an RLE list.
     """
+    # Make sure the channel is a NumPy array so blockify can use .shape
+    channel = np.asarray(channel, dtype=np.float32)
+
     blocks = blockify(channel, BLOCK_SIZE)
     compressed_blocks = []
 
@@ -148,6 +157,8 @@ def _compress_channel(channel, q_matrix):
         compressed_blocks.append(rle)
 
     return compressed_blocks
+
+
 
 
 def compress_image(img: Image.Image):
@@ -172,9 +183,11 @@ def compress_image(img: Image.Image):
     }
     return compressed
 
+
 def _decompress_channel(blocks_rle, q_matrix, width, height, block_size):
     """
     Reverse _compress_channel for one channel.
+    (Not used by main anymore, but kept for the viewer.)
     """
     reconstructed_blocks = []
 
@@ -182,7 +195,6 @@ def _decompress_channel(blocks_rle, q_matrix, width, height, block_size):
         zz = rle_decode(rle_block, total_length=64)
         q_block = inverse_zigzag_scan(zz, block_size)
         dct_block = dequantize_block(q_block, q_matrix)
-        # convert to numpy array
         arr = np.array(dct_block, dtype=np.float32)
         spatial_block = idct_2d(arr)
         reconstructed_blocks.append(spatial_block)
@@ -196,6 +208,7 @@ def decompress_image(compressed: dict) -> Image.Image:
     Decompress full-color image from compressed dict:
       - decode Y, Cb, Cr channels
       - convert YCbCr -> RGB
+    (Again, not used by main; the viewer can call this.)
     """
     width = compressed["width"]
     height = compressed["height"]
@@ -209,53 +222,44 @@ def decompress_image(compressed: dict) -> Image.Image:
     cb_channel = _decompress_channel(cb_blocks, STANDARD_CHROMA_Q, width, height, block_size)
     cr_channel = _decompress_channel(cr_blocks, STANDARD_CHROMA_Q, width, height, block_size)
 
-
     img = ycbcr_to_rgb_image(y_channel, cb_channel, cr_channel)
     return img
 
 
 def main():
     input_path = "input.bmp"
-    compressed_path = "compressed.jpc"          # custom format
-    output_path = "output_reconstructed.png"
+    compressed_path = "compressed.jpc"  # custom format
 
     img = load_image(input_path)
     img = img.resize((800, 533))   # keeps aspect ratio (6k×4k → 800×533)
     print("Loaded image:", img.size)
     width, height = img.size
 
-    # Convert once so we can reuse Cb/Cr during this early stage
-    y, cb, cr = rgb_to_ycbcr_image(img)
-
-    # Compress (currently only Y channel is compressed)
+    # Compress full image (Y, Cb, Cr) and write .jpc
     compressed = compress_image(img)
-    print("Compression produced", len(compressed["y_blocks"]), "blocks")
+    print("Compression produced", len(compressed["y_blocks"]), "Y blocks")
 
-    # Save our custom compressed representation
     save_compressed_to_file(compressed, compressed_path)
     print("Saved compressed file to", compressed_path)
 
-    # For sanity, load it back and decompress from the file
-    compressed_from_file = load_compressed_from_file(compressed_path)
-    reconstructed_img = decompress_image(compressed_from_file)
-    save_image(reconstructed_img, output_path)
-    print("Saved reconstructed image to", output_path)
-
-    # ---- Size comparison ----
-    # Raw RGB size (no compression)
+    # ---- Size comparison (no reconstructed PNG needed) ----
     raw_rgb_bytes = width * height * 3
-
-    original_png_size = os.path.getsize(input_path)
+    original_input_size = os.path.getsize(input_path)
     custom_compressed_size = os.path.getsize(compressed_path)
-    reconstructed_png_size = os.path.getsize(output_path)
 
     print("\nSize comparison (bytes):")
-    print(f"  Raw RGB (width*height*3):  {raw_rgb_bytes}")
-    print(f"  Original PNG:              {original_png_size}")
-    print(f"  Custom JPCS file:          {custom_compressed_size}")
-    print(f"  Reconstructed PNG (Pillow): {reconstructed_png_size}")
+    print(f"  Raw RGB (width*height*3): {raw_rgb_bytes}")
+    print(f"  Original input file:       {original_input_size}")
+    print(f"  Custom JPC file:         {custom_compressed_size}")
 
+    # ---- Compression ratios ----
+    # Define compression ratio as uncompressed_size / compressed_size
+    raw_to_jpcs = raw_rgb_bytes / custom_compressed_size
+    png_to_jpcs = original_input_size / custom_compressed_size
 
+    print("\nCompression ratios:")
+    print(f"  Raw RGB  : Custom JPC ≈ {raw_to_jpcs:.2f}:1")
+    print(f"  PNG file : Custom JPC ≈ {png_to_jpcs:.2f}:1")
 
 if __name__ == "__main__":
     main()
