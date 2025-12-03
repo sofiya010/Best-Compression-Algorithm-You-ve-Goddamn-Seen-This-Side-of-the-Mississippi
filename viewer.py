@@ -1,7 +1,3 @@
-# viewer.py
-# you first need to run main so you have a .jpc file type.
-# to run: python3 viewer.py compressed.jpc color_from_jpc.png
-
 import sys
 import struct
 import numpy as np
@@ -19,19 +15,29 @@ HEADER_VERSION = 2
 
 
 def load_compressed_from_file(path: str) -> dict:
+    """
+    Read the binary .jpc format produced by the compressor.
+    Validates header, loads image size, block count, and all RLE data.
+    """
     with open(path, "rb") as f:
+        # validate final magic
         magic = f.read(4)
         if magic != HEADER_MAGIC:
             raise ValueError("Not a JPCS file (bad magic)")
 
+        # check version for compatibility
         version = struct.unpack(">B", f.read(1))[0]
         if version != HEADER_VERSION:
             raise ValueError(f"Unsupported JPCS version: {version}")
 
+        # image dimensions and block size
         width, height = struct.unpack(">II", f.read(8))
         block_size = struct.unpack(">B", f.read(1))[0]
+
+        # number of encoded blocks for each channel
         y_count, cb_count, cr_count = struct.unpack(">III", f.read(12))
 
+        # read all RLE blocks for one channel
         def read_channel(block_count):
             blocks = []
             for _ in range(block_count):
@@ -47,6 +53,7 @@ def load_compressed_from_file(path: str) -> dict:
         cb_blocks = read_channel(cb_count)
         cr_blocks = read_channel(cr_count)
 
+    # Return structured dictionary for the decoder
     return {
         "width": width,
         "height": height,
@@ -56,7 +63,7 @@ def load_compressed_from_file(path: str) -> dict:
         "cr_blocks": cr_blocks,
     }
 
-
+# Reverse the full compression process for a single channel:
 def _decompress_channel(blocks_rle, q_matrix, width, height, block_size):
     reconstructed_blocks = []
 
@@ -64,16 +71,19 @@ def _decompress_channel(blocks_rle, q_matrix, width, height, block_size):
         zz = rle_decode(rle_block, total_length=64)
         q_block = inverse_zigzag_scan(zz, block_size)
         dct_block = dequantize_block(q_block, q_matrix)
-        # add
+
+        # convert to float array and apply inverse DCT
         arr = np.array(dct_block, dtype=np.float32)
         spatial_block = idct_2d(arr)
         reconstructed_blocks.append(spatial_block)
 
+    # turn list of blocks back into the full channel
     channel = unblockify(reconstructed_blocks, height, width, block_size)
     return channel
 
 
 def main():
+    # require at least a .jpc file path
     if len(sys.argv) < 2:
         print("Usage:")
         print("  python3 viewer.py compressed.jpc [output.png]")
@@ -90,6 +100,8 @@ def main():
     block_size = compressed["block_size"]
 
     print("Reconstructing channels...")
+
+    # decode Y, Cb, and Cr channels separately
     y_channel = _decompress_channel(
         compressed["y_blocks"], STANDARD_LUMA_Q, width, height, block_size
     )
@@ -106,6 +118,7 @@ def main():
     print("Saving to:", output_path)
     img.save(output_path)
 
+    # display if possible
     try:
         img.show()
     except Exception:

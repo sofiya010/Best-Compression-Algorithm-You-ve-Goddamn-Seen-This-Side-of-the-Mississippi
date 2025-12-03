@@ -1,9 +1,3 @@
-
-# entropy_encoding.py
-#
-# Zigzag ordering + basic RLE.
-# Huffman coding can be added on top of the RLE symbol stream later.
-
 from typing import List, Tuple
 
 

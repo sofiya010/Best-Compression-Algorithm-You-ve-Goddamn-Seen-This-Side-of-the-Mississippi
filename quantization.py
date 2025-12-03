@@ -1,5 +1,3 @@
-# quantization.py
-#
 # Quantization and dequantization of an 8x8 DCT block.
 
 from typing import List
@@ -16,11 +14,15 @@ STANDARD_LUMA_Q: List[List[int]] = [
     [72, 92, 95, 98,112,100,103, 99],
 ]
 
-# For simplicity we use the same matrix for chroma.
-# You can later make this more aggressive if you want extra compression.
+# For simplicity chroma channels use the same table
 STANDARD_CHROMA_Q = STANDARD_LUMA_Q
 
 def quantize_block(block: List[List[float]], q_matrix: List[List[int]]) -> List[List[int]]:
+    """
+    Divide each DCT coefficient by the corresponding quantization value and round to the nearest integer.
+    This gets rid of high-frequency detail and is the primary source of lossy compression.
+
+    """
     n = 8
     out = [[0] * n for _ in range(n)]
     for y in range(n):
@@ -30,6 +32,10 @@ def quantize_block(block: List[List[float]], q_matrix: List[List[int]]) -> List[
 
 
 def dequantize_block(block: List[List[int]], q_matrix: List[List[int]]) -> List[List[float]]:
+    """
+    Reverse quantization: multiply integer coefficients back by the 
+    quantization matrix so the inverse DCT can reconstruct the image
+    """
     n = 8
     out = [[0.0] * n for _ in range(n)]
     for y in range(n):
