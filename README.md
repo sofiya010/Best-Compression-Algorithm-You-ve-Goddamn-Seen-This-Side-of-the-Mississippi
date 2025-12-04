@@ -12,4 +12,4 @@ All files must be in the same folder
 
 How to run:
 1. python3 main.py (outputs compressed.jpc)
-2. python3 viewer.py compressed.jpc color_from_jpc.png (outputs view_from_jpc.png)
+2. python3 viewer.py compressed.jpc (outputs view_from_jpc.png)
