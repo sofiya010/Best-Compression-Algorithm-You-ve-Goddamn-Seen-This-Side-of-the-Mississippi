@@ -1,10 +1,10 @@
 Import the following:
-math
-numpy
-os
-Pillow (Image)
-struct
-typing
+   math
+   numpy
+   os
+  Pillow (Image)
+  struct
+  typing
 
 Input: Input file must be named "input.bmp", hardcoded into main. Has to be a .bmp type. 
 
